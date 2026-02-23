@@ -274,10 +274,11 @@ components need to be running:
 **Start the API server:**
 
 ```bash
-uv run fastapi dev src/main.py
+uv run fastapi dev src/main.py --host 0.0.0.0 --port 8000
 ```
 
-This is a development server that will reload whenever code is changed.
+This is a development server that will reload whenever code is changed. Binding to `0.0.0.0`
+exposes Honcho on your LAN (reachable via `http://<your-machine-ip>:8000`).
 
 **Start a background worker (deriver):**
 

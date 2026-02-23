@@ -191,10 +191,11 @@ uv run alembic upgrade head
 
 ```bash
 # Start the development server
-fastapi dev src/main.py
+fastapi dev src/main.py --host 0.0.0.0 --port 8000
 ```
 
-The server will be available at `http://localhost:8000`.
+The server will be available on your machine and LAN at `http://<your-machine-ip>:8000`
+(`http://localhost:8000` still works locally).
 
 ## Cloud Database Setup
 

@@ -89,7 +89,7 @@ and the environment variables setup you can now launch a local instance of
 Honcho. The following command will launch the storage API for Honcho
 
 ```bash
-fastapi dev src/main.py
+fastapi dev src/main.py --host 0.0.0.0 --port 8000
 ```
 This is a development server that will reload whenever code is changed. When
 first launching the API with a connection the database it will provision the

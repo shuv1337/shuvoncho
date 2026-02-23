@@ -6,6 +6,9 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 API_SESSION="shuvoncho-api"
 DERIVER_SESSION="shuvoncho-deriver"
+API_HOST="${API_HOST:-0.0.0.0}"
+API_PORT="${API_PORT:-8000}"
+API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:${API_PORT}}"
 
 cmd="${1:-help}"
 
@@ -15,8 +18,8 @@ start_api_tmux() {
     return
   fi
 
-  tmux new-session -d -s "$API_SESSION" "cd '$REPO' && uv run uvicorn src.main:app --host 127.0.0.1 --port 8000"
-  echo "Started API in tmux session: $API_SESSION"
+  tmux new-session -d -s "$API_SESSION" "cd '$REPO' && uv run uvicorn src.main:app --host $API_HOST --port $API_PORT"
+  echo "Started API in tmux session: $API_SESSION (bind ${API_HOST}:${API_PORT})"
 }
 
 start_deriver_tmux() {
@@ -40,7 +43,7 @@ stop_tmux_session() {
 }
 
 api_healthy() {
-  curl -sf "http://localhost:8000/v3/workspaces" -X POST \
+  curl -sf "$API_BASE_URL/v3/workspaces" -X POST \
     -H "Content-Type: application/json" \
     -d '{"id":"shuvoncho"}' >/dev/null
 }
@@ -92,7 +95,7 @@ case "$cmd" in
     echo ""
     echo "=== API health ==="
     if api_healthy; then
-      curl -sf "http://localhost:8000/v3/workspaces/shuvoncho/queue/status" || true
+      curl -sf "$API_BASE_URL/v3/workspaces/shuvoncho/queue/status" || true
       echo ""
     else
       echo "API not responding"
@@ -116,7 +119,7 @@ case "$cmd" in
   queue)
     echo "=== Queue status ==="
     api_healthy >/dev/null
-    curl -sf "http://localhost:8000/v3/workspaces/shuvoncho/queue/status" | python3 -m json.tool
+    curl -sf "$API_BASE_URL/v3/workspaces/shuvoncho/queue/status" | python3 -m json.tool
     ;;
 
   reset)
@@ -168,5 +171,10 @@ case "$cmd" in
     echo "  logs           — Show API + deriver logs from tmux"
     echo "  attach-api     — Attach to API tmux session"
     echo "  attach-deriver — Attach to deriver tmux session"
+    echo ""
+    echo "Env overrides:"
+    echo "  API_HOST     — API bind host (default: 0.0.0.0)"
+    echo "  API_PORT     — API bind port (default: 8000)"
+    echo "  API_BASE_URL — URL for local health checks (default: http://127.0.0.1:<API_PORT>)"
     ;;
 esac
