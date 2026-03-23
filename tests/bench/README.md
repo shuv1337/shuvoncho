@@ -6,6 +6,64 @@ This directory contains benchmarking tools for evaluating Honcho's long-term mem
 
 - **LongMemEval**: Tests memory retention across multi-session conversations
 - **BEAM**: Beyond a Million Tokens - comprehensive long-term memory evaluation across 10 memory abilities
+- **LoCoMo**: Long conversation memory benchmark across multi-hop and temporal questions
+- **OOLONG**: Long-context aggregation benchmark with `synth` and `real` variants
+
+## Benchmark Workflow
+
+Use a harness-first workflow for all benchmark runs:
+
+1. Start Honcho locally with the benchmark harness:
+
+```bash
+python tests/bench/harness.py
+```
+
+2. Run one of the benchmark runners in another terminal:
+
+```bash
+# LongMemEval
+python -m tests.bench.longmem --test-file tests/bench/longmemeval_data/longmemeval_oracle.json
+
+# LoCoMo
+python -m tests.bench.locomo --data-file tests/bench/locomo_data/locomo10.json
+
+# BEAM
+python -m tests.bench.beam --context-length 100K
+```
+
+3. For OOLONG, point `--data-dir` at your local dataset clone:
+
+```bash
+# OOLONG-synth
+python -m tests.bench.oolong --variant synth --data-dir /path/to/oolong-synth
+
+# OOLONG-real
+python -m tests.bench.oolong --variant real --data-dir /path/to/oolong-real
+
+# OOLONG-synth with label-augmented context (upstream optional mode)
+python -m tests.bench.oolong --variant synth --data-dir /path/to/oolong-synth --labels
+```
+
+Notes for OOLONG runs:
+
+- By default, synth uses `context_window_text` (upstream baseline behavior).
+- Use `--labels` to switch synth ingestion to `context_window_text_with_labels`.
+- Default `--min-context-len` is `1024` and filtering uses strict `>` matching upstream.
+
+Expected local dataset layout:
+
+```text
+oolong-synth/
+  data/
+    test-*.parquet
+    validation-*.parquet
+
+oolong-real/
+  dnd/
+    test.jsonl
+    validation.jsonl
+```
 
 ## Development Harness
 
@@ -73,7 +131,7 @@ When you run the harness, it will start:
 
 The harness uses environment variables to configure Honcho's database connection:
 
-- `DB_CONNECTION_URI`: Set to `postgresql+psycopg://testuser:testpwd@localhost:{port}/honcho`
+- `DB_CONNECTION_URI`: Derived from the database credentials in `docker-compose.yml.example` (e.g. `postgresql+psycopg://postgres:postgres@localhost:{port}/postgres`)
 
 The script will print the actual configuration that Honcho is using after the FastAPI server starts. This gives you complete visibility into how Honcho's configuration system resolved the settings from environment variables, config files, and defaults.
 
