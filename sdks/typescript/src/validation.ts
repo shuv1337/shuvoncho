@@ -36,6 +36,12 @@ export const HonchoConfigSchema = z.object({
     .max(3, 'Max retries must be at most 3')
     .optional(),
   defaultHeaders: z.record(z.string(), z.string()).optional(),
+  defaultHeadersFactory: z
+    .custom<() => Record<string, string>>(
+      (value) => value === undefined || typeof value === 'function',
+      'defaultHeadersFactory must be a function'
+    )
+    .optional(),
   defaultQuery: z
     .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
     .optional(),

@@ -38,14 +38,13 @@ def test_create_key_with_params(
     assert response.status_code == 200
     assert "key" in response.json()
 
-    # Test with session_id and collection_id
+    # Test with session_id
     response = auth_client.post(
         "/v3/keys",
         params={
             "workspace_id": test_workspace.name,
             "peer_id": test_peer.name,
             "session_id": "test-session",
-            "collection_id": "test-collection",
         },
     )
     assert response.status_code == 200

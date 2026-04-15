@@ -486,6 +486,10 @@ class TelemetrySettings(HonchoSettings):
     # Namespace for instance identification (propagated from top-level NAMESPACE if not set)
     NAMESPACE: str | None = None
 
+    # OTLP log export — send events as OTLP LogRecords (e.g. to Maple Ingest)
+    OTLP_ENDPOINT: str | None = None
+    OTLP_HEADERS: dict[str, str] | None = None
+
 
 class CacheSettings(HonchoSettings):
     model_config = SettingsConfigDict(env_prefix="CACHE_", extra="ignore")  # pyright: ignore

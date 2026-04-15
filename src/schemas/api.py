@@ -695,3 +695,50 @@ class WebhookEndpoint(WebhookEndpointBase):
     created_at: datetime.datetime
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)  # pyright: ignore
+
+
+# ---------------------------------------------------------------------------
+# System / frontend telemetry schemas
+# ---------------------------------------------------------------------------
+
+
+class SystemStatusResponse(BaseModel):
+    version: str
+    auth_enabled: bool
+    metrics_enabled: bool
+    telemetry_enabled: bool
+    sentry_enabled: bool
+    dream_enabled: bool
+    frontend_available: bool
+    request_id: str | None = None
+
+
+class FrontendTelemetryEvent(BaseModel):
+    event: str = Field(..., min_length=1)
+    workspace_id: str | None = None
+    peer_id: str | None = None
+    session_id: str | None = None
+    endpoint: str | None = None
+    method: str | None = None
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    error: str | None = None
+    timestamp: datetime.datetime
+    request_id: str | None = None
+    route: str | None = None
+
+    @field_validator("event", "endpoint", "method", "error", "request_id", "route", mode="before")
+    @classmethod
+    def sanitize_optional_strings(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return v.replace("\x00", "")
+        return v
+
+
+class FrontendTelemetryBatch(BaseModel):
+    events: list[FrontendTelemetryEvent] = Field(..., min_length=1, max_length=200)
+
+
+class FrontendTelemetryRelayResponse(BaseModel):
+    accepted: int
+    request_id: str | None = None

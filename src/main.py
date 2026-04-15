@@ -1,15 +1,18 @@
 import logging
+import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.staticfiles import StaticFiles
 from fastapi_pagination import add_pagination
 from pydantic import ValidationError
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -25,6 +28,7 @@ from src.routers import (
     messages,
     peers,
     sessions,
+    system,
     webhooks,
     workspaces,
 )
@@ -173,6 +177,12 @@ origins = [
     "https://api.honcho.dev",
 ]
 
+extra_origins = os.environ.get("FRONTEND_CORS_ORIGINS")
+if extra_origins:
+    origins.extend(
+        origin.strip() for origin in extra_origins.split(",") if origin.strip()
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -191,9 +201,38 @@ app.include_router(messages.router, prefix="/v3")
 app.include_router(conclusions.router, prefix="/v3")
 app.include_router(keys.router, prefix="/v3")
 app.include_router(webhooks.router, prefix="/v3")
+app.include_router(system.router, prefix="/v3")
 
 # Prometheus metrics endpoint
 app.add_route("/metrics", metrics_endpoint, methods=["GET"])
+
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+FRONTEND_ASSETS = FRONTEND_DIST / "assets"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+
+if FRONTEND_ASSETS.exists():
+    app.mount("/app/assets", StaticFiles(directory=str(FRONTEND_ASSETS)), name="app-assets")
+
+
+@app.get("/app", include_in_schema=False)
+async def serve_frontend_root() -> Response:
+    if not FRONTEND_INDEX.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Frontend build not found. Run the frontend build first."},
+        )
+    return FileResponse(FRONTEND_INDEX)
+
+
+@app.get("/app/{path:path}", include_in_schema=False)
+async def serve_frontend_spa(path: str) -> Response:
+    del path
+    if not FRONTEND_INDEX.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Frontend build not found. Run the frontend build first."},
+        )
+    return FileResponse(FRONTEND_INDEX)
 
 
 # Global exception handlers
@@ -225,9 +264,12 @@ async def global_exception_handler(_request: Request, exc: Exception):
 async def track_request(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ):
-    # Create a request ID that includes endpoint information
+    # Create a request ID that includes endpoint information, but prefer a caller-provided ID
     endpoint = re.sub(r"/[A-Za-z0-9_-]{21}", "", request.url.path).replace("/", "_")
-    request_id = f"{request.method}:{endpoint}:{str(uuid.uuid4())[:8]}"
+    inbound_request_id = request.headers.get("X-Request-ID")
+    request_id = inbound_request_id or (
+        f"{request.method}:{endpoint}:{str(uuid.uuid4())[:8]}"
+    )
 
     # Store in request state and context var
     request.state.request_id = request_id
@@ -235,6 +277,7 @@ async def track_request(
 
     try:
         response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
 
         # Track metrics if enabled
         if settings.METRICS.ENABLED:

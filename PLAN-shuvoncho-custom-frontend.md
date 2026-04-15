@@ -6,6 +6,7 @@ The plan is optimized for:
 - **Frontend:** React + Vite SPA mounted into FastAPI
 - **MVP scope:** **full local control plane**
 - **Auth:** **local no-auth first**, with a clear path to bearer/API-key auth later
+- **Telemetry:** **day-zero, Maple-aligned telemetry**, not console-only instrumentation
 
 This plan does **not** implement the frontend. It defines the architecture, phases, files, task breakdown, and validation steps.
 
@@ -26,9 +27,7 @@ This plan does **not** implement the frontend. It defines the architecture, phas
 
 ### What we learned
 
-- The self-hosted Shuvoncho repo currently exposes a **FastAPI API only**; there is no bundled frontend in this repo.
-  - The `app = FastAPI(...)` call in `src/main.py`
-  - Routers mounted under `/v3` in `src/main.py` via `app.include_router()`
+- The self-hosted Shuvoncho repo currently exposes a **FastAPI API only**; there is no bundled frontend in this repo today.
 - The managed Honcho product **does** have a dashboard/UI for:
   - workspaces
   - peers
@@ -63,27 +62,22 @@ A custom frontend is the best long-term fit because it can:
 
 ### App entrypoint
 
-- FastAPI application: the `app = FastAPI(...)` call in `src/main.py`
-- Seven routers mounted under `/v3` via `app.include_router()` in `src/main.py`
-- Prometheus metrics endpoint at `/metrics` via `app.add_route()` in `src/main.py`
-- **No static file serving infrastructure exists today** — no `StaticFiles` import, no mount, no SPA fallback route. `starlette.staticfiles.StaticFiles` is available via the existing FastAPI/Starlette dependency (no extra install needed).
+- FastAPI application lives in `src/main.py`
+- Routers are mounted under `/v3` in `src/main.py`
+- Prometheus metrics endpoint exists at `/metrics`
+- **No static file serving infrastructure exists today** — no `StaticFiles` import, no mount, no SPA fallback route
 
 ### CORS configuration (important for frontend dev)
 
-The current CORS `allow_origins` in `src/main.py` is:
-```python
-origins = [
-    "http://localhost",
-    "http://127.0.0.1:8000",
-    "https://api.honcho.dev",
-]
-```
+The current CORS `allow_origins` in `src/main.py` is hardcoded for a very small set of origins and does **not** include a Vite dev server origin such as `http://localhost:5173`.
 
-**This will block requests from the Vite dev server** (typically `http://localhost:5173`). Phase 0 must address this — see [CORS strategy](#cors-strategy-for-development) below.
+Phase 0 must address this with:
+- a Vite proxy for normal development
+- **comma-separated** extra origin support via `FRONTEND_CORS_ORIGINS`
 
 ### Workspace endpoints
 
-Router: `workspaces.router` in `src/routers/workspaces.py` (prefix `/workspaces`)
+Router: `src/routers/workspaces.py` (prefix `/workspaces`)
 
 Key capabilities:
 - get/create workspace
@@ -94,9 +88,11 @@ Key capabilities:
 - queue status
 - schedule dream
 
+**Important auth caveat:** workspace listing is effectively **admin-only** when auth is enabled. In no-auth mode this is fine because auth resolves to admin internally.
+
 ### Peer endpoints
 
-Router: `peers.router` in `src/routers/peers.py` (prefix `/workspaces/{workspace_id}/peers`)
+Router: `src/routers/peers.py` (prefix `/workspaces/{workspace_id}/peers`)
 
 Key capabilities:
 - list peers
@@ -111,7 +107,7 @@ Key capabilities:
 
 ### Session endpoints
 
-Router: `sessions.router` in `src/routers/sessions.py` (prefix `/workspaces/{workspace_id}/sessions`)
+Router: `src/routers/sessions.py` (prefix `/workspaces/{workspace_id}/sessions`)
 
 Key capabilities:
 - list sessions
@@ -128,7 +124,7 @@ Key capabilities:
 
 ### Message endpoints
 
-Router: `messages.router` in `src/routers/messages.py` (prefix `/workspaces/{workspace_id}/sessions/{session_id}/messages`)
+Router: `src/routers/messages.py` (prefix `/workspaces/{workspace_id}/sessions/{session_id}/messages`)
 
 Key capabilities:
 - create messages
@@ -139,7 +135,7 @@ Key capabilities:
 
 ### Conclusions endpoints
 
-Router: `conclusions.router` in `src/routers/conclusions.py`
+Router: `src/routers/conclusions.py`
 
 Key capabilities:
 - create conclusions
@@ -147,10 +143,17 @@ Key capabilities:
 - semantic query conclusions
 - delete conclusion
 
+**Important semantic-query caveat:** conclusion semantic search requires both `observer` and `observed`. There is no true workspace-global semantic query endpoint today.
+
 ### Webhooks and keys
 
 - Webhooks router: `src/routers/webhooks.py`
 - Keys router: `src/routers/keys.py`
+
+Important behavior:
+- webhooks list is **paginated**
+- keys endpoint is **generation only** (`POST /v3/keys`), not a full key-management CRUD API
+- when auth is disabled, key creation returns a disabled error
 
 ### Existing response schemas the UI can rely on
 
@@ -174,9 +177,10 @@ All in `src/schemas/api.py`:
 
 ### Existing TypeScript SDK we should reuse
 
-The repo contains a TypeScript SDK at `sdks/typescript/` (~4,600 lines across 11 source files) that covers most of the frontend surface area.
+The repo contains a TypeScript SDK at `sdks/typescript/`.
 
 **SDK is a local package** — it lives at `sdks/typescript/` with package name `@honcho-ai/sdk`. The frontend must reference it as a local file dependency, not install from npm:
+
 ```json
 {
   "dependencies": {
@@ -184,29 +188,38 @@ The repo contains a TypeScript SDK at `sdks/typescript/` (~4,600 lines across 11
   }
 }
 ```
-The SDK must be built (`bun run build` in `sdks/typescript/`) before the frontend can use it.
+
+The SDK must be built before the frontend can use it; add an automated prebuild hook so this is not a manual footgun.
 
 #### SDK coverage by domain
 
-| Domain | SDK class/method | Notes |
+| Domain | SDK status | Notes |
 |---|---|---|
-| Client init | `Honcho` constructor in `client.ts` | `baseURL`, `apiKey`, `workspaceId` |
-| Workspaces | `honcho.workspaces()`, `.search()`, `.queueStatus()`, `.scheduleDream()` | Full coverage |
-| Peers | `peer.chat()`, `.search()`, `.getCard()`, `.setCard()`, `.representation()`, `.context()` | Full coverage |
-| Sessions | `session.addPeers()`, `.addMessages()`, `.context()`, `.summaries()`, `.search()`, `.queueStatus()` | Full coverage |
-| Messages | `Message` class, `session.addMessages()` | Full coverage |
-| Conclusions | `ConclusionScope` class with `.list()`, `.query()`, `.create()`, `.delete()` | Full coverage |
-| Pagination | `Page` class in `pagination.ts` (183 lines) | Cursor-based pagination helpers |
-| Webhooks | **Not in SDK** | Use direct HTTP |
-| Keys | **Not in SDK** | Use direct HTTP |
+| Workspace-scoped peer/session/message flows | Strong | Good fit for frontend reuse |
+| Peer utilities (representation/context/card/chat/search) | Strong | Good fit |
+| Session utilities (context/summaries/search/queue) | Strong | Good fit |
+| Conclusions for a specific observer/observed scope | Strong | `ConclusionScope` is pair-scoped |
+| Webhooks | Missing | Use direct HTTP |
+| Keys | Missing | Use direct HTTP |
+| Arbitrary workspace admin CRUD/list management | Partial/awkward | Prefer direct HTTP in frontend control plane |
+| Per-request request-ID / telemetry hooks | Missing | Requires local SDK patch or wrapper |
 
-### SDK gap summary
+#### SDK pagination note
 
-Only **webhooks and keys** are not represented in the TypeScript SDK. The frontend should:
-- use the SDK for workspace / peer / session / message / conclusion flows
-- use the SDK's `ConclusionScope` for all conclusion operations
-- use the SDK's `Page` class for paginated responses
-- use direct HTTP calls only for keys, webhooks, and the playground
+The SDK `Page` class wraps **page/size pagination**, not cursor pagination. All UI list views should be designed around explicit page number + page size.
+
+### SDK usage strategy
+
+The frontend should:
+- use the SDK for peer / session / message / scoped-conclusion flows
+- use direct HTTP for:
+  - workspace list/create/update/delete flows in the control plane
+  - webhooks
+  - keys
+  - playground requests
+  - system/status and telemetry relay endpoints
+  - workspace-wide conclusions listing where that is more convenient than forcing pair-scoped SDK abstractions
+- patch the local SDK **only if needed** to support per-request headers / request-correlation hooks cleanly
 
 ---
 
@@ -236,7 +249,7 @@ A local-first control plane that mirrors the upstream dashboard structure:
 
 3. **API / Ops**
    - API playground
-   - keys (even if local no-auth first, still useful when auth is enabled later)
+   - **key generator** (not full key management, unless backend expands later)
    - webhooks
    - performance/metrics-style page
    - instance health/status
@@ -262,6 +275,7 @@ A local-first control plane that mirrors the upstream dashboard structure:
 - list accessible workspaces
 - create workspace
 - navigate into workspace
+- in auth-enabled non-admin mode, gracefully degrade to **current-workspace-only** UX instead of assuming global listing works
 
 #### Workspace overview
 - summary cards
@@ -270,6 +284,7 @@ A local-first control plane that mirrors the upstream dashboard structure:
 - queue status snapshot
 - quick actions for create peer/session
 - recent peers/sessions
+- config/metadata viewer
 
 #### Peer list
 - sortable/filterable peers table with pagination
@@ -304,7 +319,7 @@ A local-first control plane that mirrors the upstream dashboard structure:
 
 #### Conclusions view
 - list conclusions with filters and pagination
-- semantic query tool
+- semantic query tool that **requires explicit observer + observed selection**
 - inspect conclusion payloads (raw JSON inspector)
 - optional delete action
 
@@ -317,20 +332,22 @@ A local-first control plane that mirrors the upstream dashboard structure:
 - optional bearer token field for future auth mode
 
 #### Metrics / health
-- embed or summarize `/metrics`
+- parse selected metrics from `/metrics` into cards/tables rather than dumping raw Prometheus text only
 - queue status rollups
 - message creation / dialectic call / worker counters where useful
-- basic health checks (API reachable, auth mode, metrics enabled)
+- basic health/config status from a new `/v3/system/status` endpoint
+- raw metrics text fallback viewer for debugging
 
 #### Webhooks
-- list endpoints
+- paginated list endpoints
 - create endpoint
 - delete endpoint
 - test emit
 
-#### Keys
+#### Key generator
 - create scoped key when auth is enabled
 - show disabled-state guidance when `AUTH_USE_AUTH=false`
+- clearly label this as **generation-only**, not full key management
 
 ### Dream scheduling form fields
 
@@ -345,6 +362,8 @@ The `ScheduleDreamRequest` schema requires:
 
 The dream scheduling UI should present these four fields with peer/session pickers and a dropdown for dream type (pre-populated with `omni`, extensible when new types are added).
 
+The form must also handle a **dreams disabled** backend state gracefully.
+
 ---
 
 ## Technical architecture
@@ -354,13 +373,13 @@ The dream scheduling UI should present these four fields with peer/session picke
 - **React**
 - **Vite**
 - **TypeScript**
-- **bun** as the package manager (consistent with the existing SDK)
+- **bun** as the package manager
 - **React Router** for page routing
 - **TanStack Query** for server state
-- **Tailwind CSS** for utility-first styling (dark-first palette, avoids building a component library from scratch)
-- **shadcn/ui** for the component layer (data tables, tabs, forms, status badges, JSON viewers, empty states, code blocks, copy buttons — all solved out of the box)
-- **Honcho TypeScript SDK** (`@honcho-ai/sdk` as local file dependency) as the primary data-access layer
-- direct `fetch`/HTTP client only for gaps (keys, webhooks, playground)
+- **Tailwind CSS** for utility-first styling
+- **shadcn/ui** for tables, tabs, forms, status badges, JSON viewers, empty states, code blocks, copy buttons
+- **Honcho TypeScript SDK** (`@honcho-ai/sdk` as local file dependency) as the primary data-access layer where it maps cleanly
+- direct HTTP helpers for control-plane gaps
 
 ### Recommended repository layout
 
@@ -373,7 +392,7 @@ frontend/
   tsconfig.json
   vite.config.ts
   tailwind.config.ts
-  components.json          # shadcn/ui config
+  components.json
   src/
     main.tsx
     app/
@@ -393,13 +412,14 @@ frontend/src/
     router.tsx
     providers.tsx
   lib/
-    honcho.ts              # SDK client wrapper
-    api.ts                 # direct HTTP helpers (keys, webhooks, playground)
+    honcho.ts              # SDK wrapper
+    api.ts                 # direct HTTP helpers
     auth.ts                # token injection abstraction
-    telemetry.ts           # structured event logging + request correlation
+    telemetry.ts           # event emission + relay
+    request-id.ts          # request ID generator/helpers
     format.ts              # entity formatters
   components/
-    ui/                    # shadcn/ui components
+    ui/
     layout/
     data-table/
     code-viewer/
@@ -416,6 +436,7 @@ frontend/src/
     keys/
     playground/
     metrics/
+    system/
   routes/
     workspaces/
     peers/
@@ -425,29 +446,41 @@ frontend/src/
     metrics/
 ```
 
+### Frontend build/base requirements
+
+The SPA will be served from `/app`, so Vite must be configured with:
+
+```ts
+base: '/app/'
+```
+
+Without this, built asset paths will point to `/assets/...` instead of `/app/assets/...` and production serving will break.
+
 ### FastAPI integration approach
 
 Serve the built SPA from FastAPI in production/local-dev integration mode.
 
 Required additions to `src/main.py`:
-- Import `starlette.staticfiles.StaticFiles` (already available, no new dependency)
-- Mount `StaticFiles` at `/app/assets` pointing to `frontend/dist/assets`
-- Add an SPA catch-all route for `/app/{path:path}` that returns `frontend/dist/index.html`
-- These mounts must come **after** the `/v3` router mounts and `/metrics` to avoid path conflicts
+- import `StaticFiles`
+- compute **absolute paths** to `frontend/dist` and `frontend/dist/assets`
+- mount `StaticFiles` at `/app/assets`
+- add `GET /app` returning `frontend/dist/index.html`
+- add `GET /app/{path:path}` returning `frontend/dist/index.html`
+- these routes must come **after** `/v3` routers and `/metrics` to avoid path conflicts
 
-During development, use Vite's dev server with a proxy (see [CORS strategy](#cors-strategy-for-development) below) instead of serving from FastAPI.
+During development, use Vite's dev server with a proxy instead of serving from FastAPI.
 
-### CORS strategy for development
+### CORS strategy for development and LAN access
 
-**Problem:** The Vite dev server runs on `http://localhost:5173` (or similar) which is not in the current CORS `allow_origins` list, so API calls from the dev server will be blocked.
+**Problem:** The Vite dev server runs on `http://localhost:5173` (or similar), which is not currently allowed by backend CORS.
 
 **Solution (two-pronged):**
 
-1. **Vite proxy (primary, for development):** Configure `vite.config.ts` to proxy `/v3/*` and `/metrics` to `http://localhost:8000`. This avoids CORS entirely during development because the browser sees same-origin requests.
+1. **Vite proxy (primary for development):**
 
 ```typescript
-// frontend/vite.config.ts
 export default defineConfig({
+  base: '/app/',
   server: {
     proxy: {
       '/v3': 'http://localhost:8000',
@@ -458,24 +491,21 @@ export default defineConfig({
 })
 ```
 
-2. **Extend CORS for LAN/remote access:** Add an optional `FRONTEND_CORS_ORIGIN` environment variable to `src/main.py` that allows additional origins. This supports LAN access (e.g., `http://192.168.x.x:5173`) and production flexibility without hardcoding origins.
+2. **Extend CORS for LAN/remote access:** Add optional `FRONTEND_CORS_ORIGINS` support to `src/main.py`. This should be a comma-separated list, e.g.:
 
-```python
-# In src/main.py, extend the origins list:
-import os
-extra_origin = os.environ.get("FRONTEND_CORS_ORIGIN")
-if extra_origin:
-    origins.append(extra_origin)
+```bash
+FRONTEND_CORS_ORIGINS=http://localhost:5173,http://192.168.1.20:5173
 ```
 
 ### Why this architecture
 
 - Keeps the API and UI in one repo
-- Reuses the existing TypeScript SDK as a local dependency
-- Allows iterative rollout: UI can start read-heavy and grow into full control plane
+- Reuses the existing TypeScript SDK where it fits well
+- Uses direct HTTP where the SDK is awkward or incomplete
+- Allows iterative rollout: read-heavy first, then full control plane
 - Easy to deploy locally in one process after build
 - Easy to run separately during development with Vite dev server + proxy
-- Tailwind + shadcn/ui dramatically reduces component-building scope
+- Tailwind + shadcn/ui dramatically reduce component-building scope
 
 ---
 
@@ -483,12 +513,12 @@ if extra_origin:
 
 ### Phase 1: local no-auth first
 
-Default behavior should assume auth is off (the `AuthSettings` class in `src/config.py` defaults `USE_AUTH=False`).
+Default behavior should assume auth is off (`AUTH_USE_AUTH=false`).
 
 Frontend behavior:
 - no login wall in local mode
 - no required token entry for normal browsing
-- keys page should show explanatory disabled state when auth is off
+- key generator page should show explanatory disabled state when auth is off
 - API playground should allow optional bearer token field, but not require it
 
 ### Phase 2: auth-ready architecture
@@ -496,16 +526,17 @@ Frontend behavior:
 Do not hardcode a no-auth assumption into the app architecture.
 
 From day one, structure the app so that:
-- HTTP client can optionally send `Authorization: Bearer ...` (abstracted in `frontend/src/lib/auth.ts`)
+- HTTP client can optionally send `Authorization: Bearer ...`
 - token can be sourced from local storage / env / user input later
 - unauthorized states (401/403) are surfaced cleanly in UI
 - routes/components can adapt to enabled auth without rewrite
+- workspace listing degrades gracefully for non-admin scoped users
 
 ---
 
 ## Telemetry requirements for the frontend
 
-Telemetry is mandatory and should be included in the plan from the start.
+Telemetry is mandatory and is part of MVP, not a later follow-up.
 
 ### Frontend telemetry objectives
 
@@ -523,53 +554,93 @@ For the UI, we need enough observability to answer:
 - [ ] client-side latency measurement around major API calls
 - [ ] explicit error telemetry for failed requests and failed render states
 - [ ] stable entity IDs in event payloads where applicable (`workspace_id`, `peer_id`, `session_id`)
+- [ ] events forwarded into the project telemetry pipeline via backend relay → Maple
 
 ### MVP telemetry implementation (concrete)
 
-#### a. Structured console logging
+#### a. Frontend event emitter
 
-`frontend/src/lib/telemetry.ts` should export a `track()` function that emits structured JSON events to `console.log`:
+`frontend/src/lib/telemetry.ts` should export a `track()` function that:
+- emits structured JSON to `console.log` for immediate local debugging
+- also forwards events to a new backend relay endpoint
 
 ```typescript
 interface TelemetryEvent {
-  event: string;               // e.g. "route.view", "api.request", "api.error"
-  workspace_id?: string;
-  peer_id?: string;
-  session_id?: string;
-  endpoint?: string;
-  method?: string;
-  status_code?: number;
-  latency_ms?: number;
-  error?: string;
-  timestamp: string;           // ISO 8601
-  request_id?: string;         // correlates with backend
+  event: string
+  workspace_id?: string
+  peer_id?: string
+  session_id?: string
+  endpoint?: string
+  method?: string
+  status_code?: number
+  latency_ms?: number
+  error?: string
+  timestamp: string
+  request_id?: string
+  route?: string
 }
 ```
 
-This is cheap, zero-dependency, and provides immediate observability via browser DevTools.
-
 #### b. Request correlation
 
-All API calls from `frontend/src/lib/api.ts` and the SDK wrapper should attach an `X-Request-ID` header (UUID v4). The backend already reads `request.state.request_id` in its tracking middleware — extending it to prefer the client-provided header enables end-to-end correlation.
+All API calls from `frontend/src/lib/api.ts` and SDK-backed calls should attach an `X-Request-ID` header (UUID v4). The backend must be updated to:
+- prefer incoming `X-Request-ID` when present
+- fall back to generated IDs when absent
+- echo the chosen request ID back in the response header
 
 #### c. Request timing
 
-Wrap all `fetch` calls (both SDK and direct HTTP) with `performance.now()` timing. Emit `api.request` telemetry events with `latency_ms`, `status_code`, and `endpoint`.
+Wrap all API calls with `performance.now()` timing. Emit telemetry events with `latency_ms`, `status_code`, `endpoint`, and `request_id`.
 
 #### d. Route instrumentation
 
-Use a React Router loader or `useEffect` in the app shell to emit `route.view` events on every navigation, including entity IDs extracted from URL params.
+Use a React Router hook or app-shell effect to emit `route.view` on every navigation, including entity IDs derived from route params.
 
-### Follow-up telemetry path
+#### e. Backend telemetry relay
 
-- Add browser-to-Maple OTLP ingestion when practical (the project standard pipeline is: service → Maple Ingest `:3474` → OTEL Collector → Tinybird)
-- Unify frontend `X-Request-ID` with backend request correlation end-to-end
-- Consider OpenTelemetry JS SDK if the event volume justifies it
+Add a lightweight backend endpoint, e.g. `POST /v3/system/frontend_telemetry`, that:
+- accepts validated frontend telemetry events
+- logs them structurally
+- forwards them into the existing telemetry path aligned with Maple/CloudEvents where practical
 
-Frontend files needed:
-- `frontend/src/lib/telemetry.ts` — event emitter
-- `frontend/src/lib/api.ts` — request timing, `X-Request-ID` injection
+This avoids browser credential/CORS issues and keeps telemetry consistent with backend observability standards.
+
+### Frontend files needed
+
+- `frontend/src/lib/telemetry.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/request-id.ts`
 - route instrumentation in app shell/router
+
+---
+
+## Additional backend support required for the frontend
+
+To make the control plane robust, add a small system/ops API surface:
+
+### System status endpoint
+
+Add `GET /v3/system/status` returning safe, non-secret instance info such as:
+- version
+- auth enabled
+- metrics enabled
+- telemetry enabled
+- sentry enabled
+- dream enabled
+- base API URL hints if useful
+
+This gives the Metrics/health page a real source of truth rather than inferring state from `/metrics` alone.
+
+### Frontend telemetry relay endpoint
+
+Add `POST /v3/system/frontend_telemetry` for validated browser telemetry events.
+
+### Request ID behavior
+
+Update backend request middleware to:
+- use incoming `X-Request-ID` if present
+- generate one otherwise
+- set the resolved request ID on the response header
 
 ---
 
@@ -578,16 +649,17 @@ Frontend files needed:
 ### Visual language
 
 Use the upstream dashboard as inspiration, not a pixel-perfect clone:
-- dark-first palette (Tailwind dark mode)
+- dark-first palette
 - monospaced labels and counts
 - left nav rail
-- high-contrast data tables (shadcn/ui DataTable)
+- high-contrast data tables
 - sparse, tool-like controls
-- straightforward operational UX over decorative product marketing polish
+- straightforward operational UX over decorative marketing polish
+- small route/version/environment badge in the shell header so the user always knows what instance they are viewing
 
 ### UX principles
 
-- prioritize exploration and inspection over "dashboard fluff"
+- prioritize exploration and inspection over dashboard fluff
 - optimize for dense, inspectable data
 - keep JSON visible and easy to copy
 - allow quick drill-down from workspace → peer/session → messages/context
@@ -601,186 +673,217 @@ Use the upstream dashboard as inspiration, not a pixel-perfect clone:
 - clear timestamps and timezone handling
 - large raw text areas for context/representation output
 - code/json blocks with copy buttons
+- explicit disabled states for:
+  - auth-disabled key generation
+  - metrics-disabled metrics page
+  - dreams-disabled scheduling form
 
 ---
 
 ## Recommended implementation phases
 
-## Phase 0 — architecture and scaffolding
+### Phase 0 — architecture and scaffolding
 
-- [ ] Create a frontend package under `frontend/`
-- [ ] Add Vite + React + TypeScript setup with **bun** as package manager
-- [ ] Add Tailwind CSS with dark mode configuration
-- [ ] Initialize shadcn/ui (`components.json` + base components)
-- [ ] Add React Router and TanStack Query
-- [ ] Add `@honcho-ai/sdk` as a local file dependency (`"file:../sdks/typescript"`)
-- [ ] Ensure SDK is built before frontend (`bun run build` in `sdks/typescript/`)
-- [ ] Add a shared app shell with left nav, top header, and content area
-- [ ] Add design tokens and base styling (Tailwind config)
-- [ ] Add environment/config handling for API base URL and optional bearer token
-- [ ] Add frontend telemetry scaffolding (`lib/telemetry.ts` with structured console logging)
-- [ ] Add `X-Request-ID` header injection in `lib/api.ts`
-- [ ] Configure Vite proxy for `/v3/*`, `/metrics`, and `/openapi.json` → `http://localhost:8000`
-- [ ] Add `FRONTEND_CORS_ORIGIN` env var support to `src/main.py` CORS config
-- [ ] Add `StaticFiles` mount for `frontend/dist/assets` and SPA catch-all route for `/app/{path:path}` in `src/main.py`
-- [ ] Build output path: `frontend/dist/` (Vite default)
+- [x] Create a frontend package under `frontend/`
+- [x] Add Vite + React + TypeScript setup with **bun** as package manager
+- [x] Add Tailwind CSS with dark mode configuration
+- [x] Initialize shadcn/ui (`components.json` + base components)
+- [x] Add React Router and TanStack Query
+- [x] Add `@honcho-ai/sdk` as a local file dependency (`"file:../sdks/typescript"`)
+- [x] Add an SDK rebuild step via `prebuild`/workspace script so frontend builds do not silently use stale SDK output
+- [x] Configure Vite `base: '/app/'`
+- [x] Add a shared app shell with left nav, top header, route/version badge, and content area
+- [x] Add design tokens and base styling
+- [x] Add environment/config handling for API base URL and optional bearer token
+- [x] Add frontend telemetry scaffolding (`lib/telemetry.ts`, `lib/request-id.ts`)
+- [x] Configure Vite proxy for `/v3/*`, `/metrics`, and `/openapi.json` → `http://localhost:8000`
+- [x] Add `FRONTEND_CORS_ORIGINS` support to `src/main.py`
+- [x] Add backend request-ID preference/echo behavior in `src/main.py`
+- [x] Add `StaticFiles` mount for `frontend/dist/assets`
+- [x] Add explicit `/app` route returning `index.html`
+- [x] Add explicit `/app/{path:path}` SPA fallback returning `index.html`
+- [x] Use **absolute paths** for all frontend-dist serving in FastAPI
+- [x] Add new system router with `/v3/system/status`
+- [x] Add new system router with `/v3/system/frontend_telemetry`
 
 ### Validation
-- [ ] `bun install` succeeds in `frontend/`
+- [x] `bun install` succeeds in `frontend/`
 - [ ] `bun run dev` starts Vite dev server and loads a placeholder app
 - [ ] API calls from Vite dev server to `/v3/workspaces` succeed (proxy works, no CORS errors)
-- [ ] `bun run build` produces static assets in `frontend/dist/`
-- [ ] FastAPI can serve the built app at `/app` (SPA fallback works for nested routes)
-- [ ] Telemetry events appear in browser console on route navigation
+- [x] `bun run build` produces static assets in `frontend/dist/`
+- [ ] FastAPI can serve the built app at `/app`
+- [ ] FastAPI can serve nested routes like `/app/workspaces/demo`
+- [ ] built assets resolve under `/app/assets/...`
+- [x] `/v3/system/status` returns expected config flags
+- [ ] telemetry events appear in browser console and can be posted to the relay endpoint
 
 ---
 
-## Phase 1 — SDK integration and data layer
+### Phase 1 — data layer, SDK integration, and instrumentation
 
-- [ ] Create a frontend Honcho client wrapper (`lib/honcho.ts`) around `@honcho-ai/sdk`
-- [ ] Add direct HTTP helpers (`lib/api.ts`) for endpoints not covered by the SDK (webhooks, keys, playground requests)
-- [ ] Add shared TanStack Query key conventions for workspaces/peers/sessions/messages/conclusions
-- [ ] Add pagination handling using the SDK's `Page` class — all list views must paginate from day one
-- [ ] Add entity mappers/formatters where SDK responses need shaping for UI
-- [ ] Add consistent error handling and retry policy (TanStack Query retry + error boundary)
-- [ ] Add request timing instrumentation in both `lib/honcho.ts` and `lib/api.ts`
-- [ ] Add auth token injection abstraction in `lib/auth.ts` (reads from localStorage or config, sends as `Authorization: Bearer` when present)
+- [x] Create a frontend Honcho client wrapper (`lib/honcho.ts`) around `@honcho-ai/sdk`
+- [x] Add direct HTTP helpers (`lib/api.ts`) for control-plane endpoints not cleanly covered by the SDK:
+  - workspace admin CRUD/list
+  - webhooks
+  - keys
+  - playground requests
+  - system/status
+  - telemetry relay
+- [x] Decide and implement one request-correlation path:
+  - **preferred:** patch local SDK HTTP client to support per-request headers or request hooks
+  - fallback: route SDK traffic through a thin wrapper that can inject request IDs consistently
+- [x] Add shared TanStack Query key conventions for workspaces/peers/sessions/messages/conclusions/webhooks/system
+- [x] Add pagination handling using page/size semantics from day one
+- [x] Add entity mappers/formatters where SDK responses need shaping for UI
+- [x] Add consistent error handling and retry policy (TanStack Query retry + error boundary)
+- [x] Add request timing instrumentation in both SDK-backed and direct HTTP paths
+- [x] Add auth token injection abstraction in `lib/auth.ts`
 
 ### Validation
-- [ ] frontend can list workspaces through SDK with pagination
-- [ ] frontend can load peer/session data through SDK
-- [ ] frontend can list conclusions through SDK's `ConclusionScope`
-- [ ] frontend can call webhooks/keys endpoints through direct HTTP helper
-- [ ] request failures surface readable UI errors and telemetry events
-- [ ] `X-Request-ID` headers appear in backend logs for frontend-initiated requests
+- [x] frontend can list workspaces through direct HTTP with pagination
+- [ ] frontend can create/update workspaces through direct HTTP
+- [x] frontend can load peer/session data through SDK
+- [x] frontend can list session messages through SDK with pagination
+- [ ] frontend can list scoped conclusions through SDK and workspace-wide conclusion lists through direct HTTP
+- [x] frontend can call webhooks/key-generator/system endpoints through direct HTTP helper
+- [x] request failures surface readable UI errors and telemetry events
+- [ ] `X-Request-ID` is visible end-to-end in request/response handling
 
 ---
 
-## Phase 2 — Explore core
+### Phase 2 — Explore core
 
 ### Workspace flows
-- [ ] Build workspace list page (paginated)
-- [ ] Build workspace create flow
-- [ ] Build workspace overview page
-- [ ] Add workspace metadata/config viewer/editor
-- [ ] Add queue status summary card to workspace overview
+- [x] Build workspace list page (paginated)
+- [x] Build workspace create flow
+- [x] Build workspace overview page
+- [x] Add workspace metadata/config viewer/editor
+- [x] Add queue status summary card to workspace overview
+- [x] Add graceful scoped-auth fallback when workspace listing is not available
 
 ### Peer flows
-- [ ] Build peer list page (paginated)
-- [ ] Add peer create/edit flows
-- [ ] Build peer detail page shell
-- [ ] Show metadata/config
-- [ ] Show sessions-for-peer table (paginated)
+- [x] Build peer list page (paginated)
+- [x] Add peer create/edit flows
+- [x] Build peer detail page shell
+- [x] Show metadata/config
+- [x] Show sessions-for-peer table (paginated)
 
 ### Session flows
-- [ ] Build session list page (paginated)
-- [ ] Add session create flow
+- [x] Build session list page (paginated)
+- [x] Add session create flow
 - [ ] Add session clone/delete actions (with destructive-action confirmation)
-- [ ] Build session detail page shell
+- [x] Build session detail page shell
 - [ ] Show session metadata/config
 - [ ] Show session peers table
 
 ### Messages
-- [ ] Build messages timeline/tab in session detail (paginated)
+- [x] Build messages timeline/tab in session detail (paginated)
 - [ ] Add peer filter for messages
-- [ ] Add create message form
-- [ ] Add file upload flow for message ingestion
+- [x] Add create message form
+- [x] Add file upload flow for message ingestion
 
 ### Conclusions
-- [ ] Build conclusions list page (paginated, using `ConclusionScope.list()`)
-- [ ] Add semantic query tool (using `ConclusionScope.query()`)
-- [ ] Add details panel / raw JSON inspector
-- [ ] Add optional delete action (using `ConclusionScope.delete()`)
+- [x] Build workspace conclusions list page (paginated, direct HTTP)
+- [x] Add semantic query tool that requires observer + observed selection
+- [x] Add details panel / raw JSON inspector
+- [ ] Add optional delete action
 
 ### Validation
-- [ ] can navigate workspace → peers → peer detail
-- [ ] can navigate workspace → sessions → session detail
-- [ ] can view/add messages in a session
-- [ ] can inspect conclusions with filters and semantic query
-- [ ] pagination works on all list views (next/prev, page size)
+- [x] can navigate workspace → peers → peer detail
+- [x] can navigate workspace → sessions → session detail
+- [x] can view/add messages in a session
+- [x] can inspect conclusions with filters and scoped semantic query
+- [x] pagination works on all list views (next/prev, page size)
 
 ---
 
-## Phase 3 — utilities and advanced tools
+### Phase 3 — utilities and advanced tools
 
 ### Peer utilities
-- [ ] Add peer representation tab
-- [ ] Add peer context tab
+- [x] Add peer representation tab
+- [x] Add peer context tab
 - [ ] Add peer card tab with edit/set support
 - [ ] Add peer search tab
 - [ ] Add dialectic chat panel with streaming support if feasible
 
 ### Session utilities
 - [ ] Add session search tab
-- [ ] Add session context tab
-- [ ] Add session summaries tab
+- [x] Add session context tab
+- [x] Add session summaries tab
 - [ ] Add session peer config editor
-- [ ] Add session queue status view
+- [x] Add session queue status view
 
 ### Workspace utilities
 - [ ] Add workspace-global search UI
-- [ ] Add schedule dream form with observer (peer picker, required), observed (peer picker, optional), dream_type (dropdown, currently only `"omni"`), and session_id (session picker, optional)
-- [ ] Add workspace queue breakdown view
+- [ ] Add schedule dream form with observer (required), observed (optional), dream_type, and session_id (optional)
+- [x] Add workspace queue breakdown view
+- [ ] Add disabled/error state for dream scheduling when the feature is off
 
 ### Validation
 - [ ] peer representation/context/card flows work end-to-end
 - [ ] session context/summaries/search work end-to-end
 - [ ] schedule dream can be triggered and result is visible in queue status
 - [ ] dream scheduling form validates required fields and provides peer/session pickers
+- [ ] dream-disabled state is clearly surfaced
 
 ---
 
-## Phase 4 — local control plane pages
+### Phase 4 — local control plane pages
 
 ### API playground
-- [ ] Fetch OpenAPI spec from `/openapi.json` to auto-generate endpoint catalog
-- [ ] Group endpoints by tag (workspaces, peers, sessions, messages, conclusions, webhooks, keys)
-- [ ] Add path/query/body editor (pre-populate from OpenAPI parameter schemas)
-- [ ] Add execute request action
-- [ ] Add response inspector (JSON viewer with syntax highlighting)
-- [ ] Add copy-as-cURL
-- [ ] Add optional bearer token field
+- [x] Fetch OpenAPI spec from `/openapi.json` to auto-generate endpoint catalog
+- [x] Group endpoints by tag (workspaces, peers, sessions, messages, conclusions, webhooks, keys, system)
+- [x] Add path/query/body editor (pre-populate from OpenAPI parameter schemas)
+- [x] Add execute request action
+- [x] Add response inspector (JSON viewer with syntax highlighting)
+- [x] Add copy-as-cURL
+- [x] Add optional bearer token field
 
 ### Webhooks
-- [ ] Build webhook list/create/delete pages (direct HTTP)
-- [ ] Add test emit action
-- [ ] Show disabled/error states clearly
+- [x] Build paginated webhook list/create/delete pages (direct HTTP)
+- [x] Add test emit action
+- [x] Show disabled/error states clearly
 
-### Keys
-- [ ] Build create-key UI (direct HTTP)
-- [ ] Show auth-disabled state when `AUTH_USE_AUTH=false`
-- [ ] Support workspace/peer/session scoped key generation when auth is enabled
+### Key generator
+- [x] Build create-key UI (direct HTTP)
+- [x] Show auth-disabled state when `AUTH_USE_AUTH=false`
+- [x] Support workspace/peer/session scoped key generation when auth is enabled
+- [x] Label page copy as generation-only
 
 ### Metrics/health
-- [ ] Build metrics page using `/metrics` plus selected API calls
+- [x] Build metrics page using `/metrics` plus `/v3/system/status`
 - [ ] Surface queue status, basic counters, and health notes
-- [ ] Add backend config awareness where useful (auth enabled, metrics enabled, sentry enabled)
+- [ ] Parse selected Prometheus counters into cards/tables
+- [x] Add raw metrics text view for debugging
+- [x] Add backend config awareness from system status (auth enabled, metrics enabled, sentry enabled, telemetry enabled, dream enabled)
 
 ### Validation
 - [ ] API playground can successfully hit a representative set of endpoints
 - [ ] playground endpoint catalog stays in sync with API (driven by OpenAPI spec)
 - [ ] webhook CRUD/test works
-- [ ] keys page behaves correctly in both no-auth and auth-enabled modes
+- [ ] key generator behaves correctly in both no-auth and auth-enabled modes
 - [ ] metrics page loads and shows useful local state
+- [ ] metrics-disabled state is clearly surfaced
 
 ---
 
-## Phase 5 — polish, hardening, and rollout
+### Phase 5 — polish, hardening, and rollout
 
 - [ ] Add loading skeletons and empty states for all list/detail pages
 - [ ] Add copy buttons for IDs, JSON, context, representations
 - [ ] Add destructive-action confirmations (delete workspace/session/conclusion, etc.)
 - [ ] Add filter persistence (URL search params or localStorage)
-- [ ] Add optimistic refresh/invalidation behavior where appropriate (TanStack Query)
-- [ ] Review CORS/static serving needs for local browser access from LAN (verify `FRONTEND_CORS_ORIGIN` works)
+- [ ] Add optimistic refresh/invalidation behavior where appropriate
+- [ ] Review CORS/static serving needs for local browser access from LAN
 - [ ] Add documentation for local frontend development and build/serve workflow
 - [ ] Add tests for critical frontend routes/components
-- [ ] Add backend validation tests for new static-serving routes and SPA fallback
+- [ ] Add backend validation tests for new static-serving routes, SPA fallback, system status, request-ID behavior, and telemetry relay
 
 ### Validation
 - [ ] smooth navigation across entire control plane
 - [ ] all major empty/loading/error states are covered
 - [ ] docs allow a fresh developer to run both API and frontend locally
+- [ ] telemetry path is validated end-to-end for frontend-originated events
 
 ---
 
@@ -788,74 +891,91 @@ Use the upstream dashboard as inspiration, not a pixel-perfect clone:
 
 | UI area | Primary backend/API | Preferred access path |
 |---|---|---|
-| Workspace list | `/v3/workspaces`, `/v3/workspaces/list` | TS SDK |
-| Workspace overview | workspace + peers + sessions + queue status | TS SDK |
+| Workspace list/admin CRUD | `/v3/workspaces*` | direct HTTP |
+| Workspace overview | workspace + peers + sessions + queue status | mixed |
 | Peer list/detail | `/v3/workspaces/{workspace}/peers*` | TS SDK |
 | Session list/detail | `/v3/workspaces/{workspace}/sessions*` | TS SDK |
 | Messages | `/v3/workspaces/{workspace}/sessions/{session}/messages*` | TS SDK |
-| Conclusions | `/v3/workspaces/{workspace}/conclusions*` | TS SDK (`ConclusionScope`) |
+| Conclusions list | `/v3/workspaces/{workspace}/conclusions/list` | direct HTTP |
+| Conclusions semantic query | `/v3/workspaces/{workspace}/conclusions/query` | direct HTTP |
 | Peer context/card/representation/chat | peer utilities endpoints | TS SDK |
 | Session context/summaries/search | session utilities endpoints | TS SDK |
 | Queue status / schedule dream | workspace endpoints | TS SDK |
 | Webhooks | `/v3/workspaces/{workspace}/webhooks*` | direct HTTP |
-| Keys | `/v3/keys` | direct HTTP |
+| Key generator | `/v3/keys` | direct HTTP |
 | Playground | arbitrary endpoints + `/openapi.json` | direct HTTP |
 | Metrics | `/metrics` | direct HTTP |
+| System health/config | `/v3/system/status` | direct HTTP |
+| Frontend telemetry relay | `/v3/system/frontend_telemetry` | direct HTTP |
 
 ---
 
 ## Proposed file changes
 
-## New frontend files/directories
+### New frontend files/directories
 
-- [ ] `frontend/package.json` (bun, local SDK dependency)
-- [ ] `frontend/tsconfig.json`
-- [ ] `frontend/vite.config.ts` (with dev proxy for `/v3`, `/metrics`, `/openapi.json`)
+- [x] `frontend/package.json`
+- [x] `frontend/tsconfig.json`
+- [x] `frontend/vite.config.ts`
 - [ ] `frontend/tailwind.config.ts`
-- [ ] `frontend/components.json` (shadcn/ui)
-- [ ] `frontend/index.html`
-- [ ] `frontend/src/main.tsx`
-- [ ] `frontend/src/app/App.tsx`
-- [ ] `frontend/src/app/router.tsx`
-- [ ] `frontend/src/app/providers.tsx`
-- [ ] `frontend/src/lib/honcho.ts` (SDK wrapper)
-- [ ] `frontend/src/lib/api.ts` (direct HTTP + timing + `X-Request-ID`)
-- [ ] `frontend/src/lib/auth.ts` (token abstraction)
-- [ ] `frontend/src/lib/telemetry.ts` (structured event logging)
-- [ ] `frontend/src/components/ui/` (shadcn/ui components)
-- [ ] `frontend/src/styles/globals.css` (Tailwind base)
-- [ ] route/component files for each feature area
+- [x] `frontend/components.json`
+- [x] `frontend/index.html`
+- [x] `frontend/src/main.tsx`
+- [x] `frontend/src/app/App.tsx`
+- [x] `frontend/src/app/router.tsx`
+- [x] `frontend/src/app/providers.tsx`
+- [x] `frontend/src/lib/honcho.ts`
+- [x] `frontend/src/lib/api.ts`
+- [x] `frontend/src/lib/auth.ts`
+- [x] `frontend/src/lib/telemetry.ts`
+- [x] `frontend/src/lib/request-id.ts`
+- [x] `frontend/src/components/ui/`
+- [x] `frontend/src/styles/globals.css`
+- [x] route/component files for each feature area
 
-## Existing backend files that will change
+### Existing backend files that will change
 
-- [ ] `src/main.py`
-  - Add `from starlette.staticfiles import StaticFiles`
-  - Add `StaticFiles` mount for `frontend/dist/assets`
-  - Add SPA catch-all route for `/app/{path:path}` → `frontend/dist/index.html`
-  - Add `FRONTEND_CORS_ORIGIN` env var to extend `origins` list
+- [x] `src/main.py`
+  - Add `StaticFiles` import and absolute-path SPA serving
+  - Add `/app` and `/app/{path:path}` handling
+  - Add `FRONTEND_CORS_ORIGINS` support
+  - Prefer/echo `X-Request-ID`
+  - Include the new system router under `/v3`
+- [x] `src/schemas/api.py`
+  - Add schemas for system status and frontend telemetry relay
+- [x] `src/routers/system.py`
+  - Add system status endpoint
+  - Add frontend telemetry relay endpoint
+- [x] `src/routers/__init__.py`
+  - Include system router export
 - [ ] `README.md`
   - Frontend run/build instructions
-- [ ] possibly docs under `docs/` for local dashboard usage
+  - SDK prebuild note
+  - `/app` serving behavior
+- [ ] possibly docs under `docs/`
+  - local dashboard usage
+  - auth-mode caveats
 
-## Optional SDK-related follow-up files
+### SDK-related follow-up files
 
-If we decide to fill SDK gaps as part of the same initiative:
-- [ ] `sdks/typescript/src/client.ts` — add webhook/key methods
-- [ ] new SDK types for keys/webhooks
-- [ ] tests under `tests/sdk_typescript/`
-
-This is optional; the frontend can ship first with direct HTTP wrappers.
+If we patch the SDK for per-request header injection / hooks:
+- [x] `sdks/typescript/src/http/client.ts`
+- [x] `sdks/typescript/src/client.ts`
+- [ ] possibly related types/tests under `sdks/typescript/`
 
 ---
 
 ## Testing and validation plan
 
-## Backend-side validation
+### Backend-side validation
 
 - [ ] existing Python test suite remains green after backend integration changes
-- [ ] targeted tests for new static mount / SPA fallback behavior
-- [ ] verify `/v3/*` API routes remain unaffected
-- [ ] verify `/metrics` remains unaffected
+- [ ] targeted tests for static mount / SPA fallback behavior
+- [x] targeted tests for `/v3/system/status`
+- [x] targeted tests for frontend telemetry relay validation
+- [x] targeted tests for request-ID preference/echo behavior
+- [x] verify `/v3/*` API routes remain unaffected
+- [x] verify `/metrics` remains unaffected
 
 Commands:
 
@@ -863,10 +983,10 @@ Commands:
 uv run pytest -q
 ```
 
-## Frontend-side validation
+### Frontend-side validation
 
-- [ ] typecheck
-- [ ] build
+- [x] typecheck
+- [x] build
 - [ ] route smoke tests
 - [ ] component tests for key screens
 - [ ] basic browser/manual QA on main workflows
@@ -880,7 +1000,7 @@ bun run build
 bun test
 ```
 
-## End-to-end smoke checklist
+### End-to-end smoke checklist
 
 - [ ] open `/app`
 - [ ] create/select workspace
@@ -892,11 +1012,14 @@ bun test
 - [ ] run peer search
 - [ ] load peer representation/context/card
 - [ ] load session context/summaries
-- [ ] inspect conclusions with semantic query
+- [ ] inspect conclusions with observer/observed-scoped semantic query
 - [ ] trigger dream scheduling
 - [ ] run API playground request
 - [ ] load metrics page
+- [ ] verify `/v3/system/status` values are reflected in UI
 - [ ] verify telemetry events in browser console
+- [ ] verify frontend telemetry reaches backend relay path
+- [ ] verify request IDs correlate across frontend and backend
 
 ---
 
@@ -906,38 +1029,41 @@ bun test
 - **Mitigation:** deliver in phases, starting with Explore core and only then tools/control-plane extras
 
 ### Risk: SDK gaps slow implementation
-- **Mitigation:** use direct HTTP wrappers for keys/webhooks/playground rather than blocking on SDK changes
+- **Mitigation:** use direct HTTP wrappers for control-plane gaps instead of blocking on SDK changes
 
 ### Risk: auth later forces a large rewrite
-- **Mitigation:** abstract auth token injection from day one in `frontend/src/lib/auth.ts` and `frontend/src/lib/api.ts`
+- **Mitigation:** abstract auth token injection from day one and support scoped-user fallback UX for workspace selection
 
 ### Risk: CORS blocks the Vite dev server or LAN access
-- **Mitigation:** use Vite proxy for development (no CORS needed); add `FRONTEND_CORS_ORIGIN` env var for LAN/remote scenarios. Both are Phase 0 tasks, not deferred.
+- **Mitigation:** use Vite proxy for development and add `FRONTEND_CORS_ORIGINS` for LAN/remote scenarios
 
 ### Risk: telemetry is neglected
-- **Mitigation:** make telemetry tasks part of Phase 0/1 definition-of-done, not a later polish pass. Concrete deliverables: `telemetry.ts`, `X-Request-ID` injection, request timing.
+- **Mitigation:** make telemetry part of Phase 0/1 definition-of-done, including relay to backend and request correlation
 
 ### Risk: performance degrades on large message/session datasets
-- **Mitigation:** use paginated APIs everywhere from Phase 1 (not deferred to Phase 5), lazy-load tabs, and avoid loading heavy context tools until requested
+- **Mitigation:** use paginated APIs everywhere from day one, lazy-load expensive tabs, avoid auto-loading heavy context until requested
 
 ### Risk: local SDK dependency breaks or goes stale
-- **Mitigation:** frontend `package.json` references `"file:../sdks/typescript"`. Any SDK change requires `bun run build` in the SDK dir. Document this in the frontend README and consider a `prebuild` script.
+- **Mitigation:** use a prebuild/workspace script that rebuilds `sdks/typescript` automatically before frontend production builds
 
-### Risk: line references in this plan go stale across upstream merges
-- **Mitigation:** all code references use function/class names and file paths, not line numbers. Grep for the named symbol to find the current location.
+### Risk: metrics page shows misleading state
+- **Mitigation:** use `/v3/system/status` for config awareness and `/metrics` for counters, instead of inferring config from Prometheus output
+
+### Risk: conclusions UX becomes confusing
+- **Mitigation:** keep workspace-wide list and pair-scoped semantic query separate in the UI and label the query inputs explicitly
 
 ---
 
 ## Recommendation on implementation order
 
-1. **Scaffold frontend + serve it from FastAPI** (Phase 0)
-2. **SDK/data layer + pagination + telemetry base** (Phase 1)
+1. **Scaffold frontend + serve it from FastAPI correctly under `/app`** (Phase 0)
+2. **Add system/status, telemetry relay, request-correlation, and data-layer foundations** (Phase 0/1)
 3. **Explore core: workspaces, peers, sessions, messages, conclusions** (Phase 2)
 4. **Utilities: representation/context/search/cards/queue/dream** (Phase 3)
-5. **Control-plane extras: playground, webhooks, keys, metrics** (Phase 4)
+5. **Control-plane extras: playground, webhooks, key generator, metrics** (Phase 4)
 6. **Polish, docs, tests, auth-ready hardening** (Phase 5)
 
-This order gets useful value fast while keeping the design aligned with the upstream dashboard model.
+This order gets useful value fast while keeping the design aligned with the upstream dashboard model and the project telemetry standard.
 
 ---
 
@@ -946,13 +1072,16 @@ This order gets useful value fast while keeping the design aligned with the upst
 The MVP is complete when all of the following are true:
 
 - [ ] built frontend is served locally from this repo at `/app`
+- [ ] asset paths work correctly under `/app/assets/...`
 - [ ] user can browse workspaces, peers, sessions, messages, and conclusions (all paginated)
 - [ ] user can use peer and session utilities (representation/context/search/summaries/cards)
 - [ ] user can view queue status and trigger dream scheduling
 - [ ] user can use a built-in API playground (driven by OpenAPI spec)
 - [ ] user can manage webhooks
-- [ ] keys page behaves correctly in no-auth mode and is ready for auth-enabled mode
+- [ ] key generator page behaves correctly in no-auth mode and is ready for auth-enabled mode
+- [ ] metrics/health page uses `/v3/system/status` plus `/metrics` and handles disabled states clearly
 - [ ] telemetry exists for route views, major actions, latency, errors, and request correlation
+- [ ] frontend-originated telemetry is relayed into the backend telemetry path
 - [ ] docs explain how to run and validate the frontend locally (both dev and production modes)
 
 ---

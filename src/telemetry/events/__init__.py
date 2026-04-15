@@ -67,6 +67,7 @@ from src.telemetry.events.dream import (
     DreamRunEvent,
     DreamSpecialistEvent,
 )
+from src.telemetry.events.frontend import FrontendTelemetryRelayedEvent
 from src.telemetry.events.reconciliation import (
     CleanupStaleItemsCompletedEvent,
     SyncVectorsCompletedEvent,
@@ -96,6 +97,8 @@ __all__ = [
     # Reconciliation events
     "SyncVectorsCompletedEvent",
     "CleanupStaleItemsCompletedEvent",
+    # Frontend events
+    "FrontendTelemetryRelayedEvent",
     # Deletion events
     "DeletionCompletedEvent",
     # Lifecycle
@@ -109,6 +112,7 @@ def emit(event: BaseEvent) -> None:
 
     This is the main entry point for emitting telemetry events.
     Events are buffered and sent asynchronously to the configured endpoint.
+    Events are sent to both CloudEvents and OTLP emitters if configured.
 
     If telemetry is disabled or not initialized, this is a no-op.
     Telemetry failures are caught and logged to Sentry to avoid blocking operations.
@@ -124,32 +128,41 @@ def emit(event: BaseEvent) -> None:
             ...
         ))
     """
+    emitted = False
     try:
         from src.telemetry.emitter import get_emitter
 
         emitter = get_emitter()
-        if emitter is None:
-            logger.debug("Telemetry emitter not initialized, dropping event")
-            return
-
-        emitter.emit(event)
+        if emitter is not None:
+            emitter.emit(event)
+            emitted = True
     except Exception as e:
-        # Log to Sentry but don't block the main operation
         import sentry_sdk
-
         sentry_sdk.capture_exception(e)
-        logger.warning(
-            "Failed to emit telemetry event %s: %s",
-            type(event).__name__,
-            str(e),
-        )
+        logger.warning("Failed to emit CloudEvents telemetry %s: %s", type(event).__name__, str(e))
+
+    try:
+        from src.telemetry.otlp_emitter import get_otlp_emitter
+
+        otlp = get_otlp_emitter()
+        if otlp is not None:
+            otlp.emit(event)
+            emitted = True
+    except Exception as e:
+        import sentry_sdk
+        sentry_sdk.capture_exception(e)
+        logger.warning("Failed to emit OTLP telemetry %s: %s", type(event).__name__, str(e))
+
+    if not emitted:
+        logger.debug("No telemetry emitters initialized, dropping event")
 
 
 async def initialize_telemetry_events() -> None:
     """Initialize the telemetry events system based on configuration.
 
     This should be called once at application startup. It reads
-    configuration from settings and initializes the CloudEvents emitter.
+    configuration from settings and initializes the CloudEvents emitter
+    and/or the OTLP log emitter.
 
     This is typically called from initialize_telemetry() in the main
     telemetry module.
@@ -159,22 +172,40 @@ async def initialize_telemetry_events() -> None:
 
     if not settings.TELEMETRY.ENABLED:
         logger.info("CloudEvents telemetry disabled")
-        return
+    else:
+        # CloudEvents emitter (original)
+        await initialize_emitter(
+            endpoint=settings.TELEMETRY.ENDPOINT,
+            headers=settings.TELEMETRY.HEADERS,
+            batch_size=settings.TELEMETRY.BATCH_SIZE,
+            flush_interval_seconds=settings.TELEMETRY.FLUSH_INTERVAL_SECONDS,
+            flush_threshold=settings.TELEMETRY.FLUSH_THRESHOLD,
+            max_retries=settings.TELEMETRY.MAX_RETRIES,
+            max_buffer_size=settings.TELEMETRY.MAX_BUFFER_SIZE,
+            enabled=True,
+        )
+        logger.info(
+            "CloudEvents telemetry initialized, endpoint: %s", settings.TELEMETRY.ENDPOINT
+        )
 
-    await initialize_emitter(
-        endpoint=settings.TELEMETRY.ENDPOINT,
-        headers=settings.TELEMETRY.HEADERS,
-        batch_size=settings.TELEMETRY.BATCH_SIZE,
-        flush_interval_seconds=settings.TELEMETRY.FLUSH_INTERVAL_SECONDS,
-        flush_threshold=settings.TELEMETRY.FLUSH_THRESHOLD,
-        max_retries=settings.TELEMETRY.MAX_RETRIES,
-        max_buffer_size=settings.TELEMETRY.MAX_BUFFER_SIZE,
-        enabled=True,
-    )
+    # OTLP log emitter (Maple integration)
+    if settings.TELEMETRY.OTLP_ENDPOINT:
+        from src.telemetry.otlp_emitter import initialize_otlp_emitter
 
-    logger.info(
-        "CloudEvents telemetry initialized, endpoint: %s", settings.TELEMETRY.ENDPOINT
-    )
+        await initialize_otlp_emitter(
+            endpoint=settings.TELEMETRY.OTLP_ENDPOINT,
+            headers=settings.TELEMETRY.OTLP_HEADERS,
+            namespace=settings.TELEMETRY.NAMESPACE,
+            batch_size=settings.TELEMETRY.BATCH_SIZE,
+            flush_interval_seconds=settings.TELEMETRY.FLUSH_INTERVAL_SECONDS,
+            flush_threshold=settings.TELEMETRY.FLUSH_THRESHOLD,
+            max_retries=settings.TELEMETRY.MAX_RETRIES,
+            max_buffer_size=settings.TELEMETRY.MAX_BUFFER_SIZE,
+            enabled=True,
+        )
+        logger.info(
+            "OTLP log emitter initialized, endpoint: %s/v1/logs", settings.TELEMETRY.OTLP_ENDPOINT
+        )
 
 
 async def shutdown_telemetry_events() -> None:
@@ -184,6 +215,8 @@ async def shutdown_telemetry_events() -> None:
     all buffered events are flushed before exit.
     """
     from src.telemetry.emitter import shutdown_emitter
+    from src.telemetry.otlp_emitter import shutdown_otlp_emitter
 
     await shutdown_emitter()
-    logger.info("CloudEvents telemetry shutdown complete")
+    await shutdown_otlp_emitter()
+    logger.info("Telemetry shutdown complete")

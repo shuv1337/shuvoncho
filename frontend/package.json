@@ -1,0 +1,30 @@
+{
+  "name": "shuvoncho-frontend",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:sdk": "cd ../sdks/typescript && bun run build",
+    "build": "bun run build:sdk && tsc -b && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@honcho-ai/sdk": "file:../sdks/typescript",
+    "@tanstack/react-query": "^5.66.8",
+    "@tanstack/react-query-devtools": "^5.66.8",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.4",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.1.4",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

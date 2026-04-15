@@ -12,6 +12,7 @@ export interface HonchoHTTPClientConfig {
   timeout?: number
   maxRetries?: number
   defaultHeaders?: Record<string, string>
+  defaultHeadersFactory?: () => Record<string, string>
   defaultQuery?: Record<string, string | number | boolean | undefined>
 }
 
@@ -37,6 +38,7 @@ export class HonchoHTTPClient {
   readonly timeout: number
   readonly maxRetries: number
   readonly defaultHeaders: Record<string, string>
+  readonly defaultHeadersFactory?: () => Record<string, string>
   readonly defaultQuery?: Record<string, string | number | boolean | undefined>
 
   constructor(config: HonchoHTTPClientConfig) {
@@ -49,6 +51,7 @@ export class HonchoHTTPClient {
       'Content-Type': 'application/json',
       ...config.defaultHeaders,
     }
+    this.defaultHeadersFactory = config.defaultHeadersFactory
     this.defaultQuery = config.defaultQuery
   }
 
@@ -247,7 +250,9 @@ export class HonchoHTTPClient {
   ): Promise<T> {
     const url = this.buildURL(path, options.query)
     // Don't set Content-Type for FormData - browser will set it with boundary
-    const headers: Record<string, string> = {}
+    const headers: Record<string, string> = this.defaultHeadersFactory
+      ? { ...this.defaultHeadersFactory() }
+      : {}
     if (this.apiKey) {
       headers.Authorization = `Bearer ${this.apiKey}`
     }
@@ -306,7 +311,10 @@ export class HonchoHTTPClient {
   }
 
   private buildHeaders(extra?: Record<string, string>): Record<string, string> {
-    const headers: Record<string, string> = { ...this.defaultHeaders }
+    const headers: Record<string, string> = {
+      ...this.defaultHeaders,
+      ...(this.defaultHeadersFactory ? this.defaultHeadersFactory() : {}),
+    }
 
     if (this.apiKey) {
       headers.Authorization = `Bearer ${this.apiKey}`

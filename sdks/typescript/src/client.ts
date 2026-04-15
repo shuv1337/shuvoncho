@@ -163,6 +163,7 @@ export class Honcho {
       timeout: validatedOptions.timeout,
       maxRetries: validatedOptions.maxRetries,
       defaultHeaders: validatedOptions.defaultHeaders,
+      defaultHeadersFactory: validatedOptions.defaultHeadersFactory,
       defaultQuery: validatedOptions.defaultQuery,
     })
   }
