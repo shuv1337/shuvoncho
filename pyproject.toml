@@ -40,6 +40,12 @@ dependencies = [
     "scikit-learn>=1.6.0",
     "prometheus_client>=0.21.0",
     "cloudevents>=1.12.0",
+    "opentelemetry-instrumentation-fastapi>=0.60",
+    "opentelemetry-instrumentation-sqlalchemy>=0.60",
+    "opentelemetry-instrumentation-asyncpg>=0.60",
+    "opentelemetry-instrumentation-redis>=0.60",
+    "opentelemetry-instrumentation-httpx>=0.60",
+    "opentelemetry-instrumentation-logging>=0.60",
 ]
 [dependency-groups]
 dev = [

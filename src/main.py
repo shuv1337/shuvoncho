@@ -38,6 +38,11 @@ from src.telemetry import (
     prometheus_metrics,
     shutdown_telemetry,
 )
+from src.telemetry.tracing import instrument_fastapi, setup_tracing
+
+# Set up OTEL tracing + auto-instrumentation BEFORE app construction.
+# No-op if TELEMETRY_OTLP_ENDPOINT is unset.
+setup_tracing()
 from src.telemetry.logging import get_route_template
 from src.telemetry.sentry import initialize_sentry
 
@@ -170,6 +175,9 @@ app = FastAPI(
         "url": "https://github.com/plastic-labs/honcho/blob/main/LICENSE",
     },
 )
+
+# Attach OTEL FastAPI instrumentation (no-op if tracing disabled).
+instrument_fastapi(app)
 
 origins = [
     "http://localhost",
