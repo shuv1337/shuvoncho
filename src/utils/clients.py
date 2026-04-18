@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -42,6 +43,36 @@ GEMINI_BLOCKED_FINISH_REASONS = {
     "PROHIBITED_CONTENT",
     "BLOCKLIST",
 }
+
+
+# --- Harmony-token sanitizer (defense in depth) --------------------------------
+# Some locally-hosted / fine-tuned models (notably supergemma4-26b-uncensored-v2
+# served via LM Studio under provider="custom") leak OpenAI-Harmony-style channel
+# tokens into their textual output, e.g.
+#     "<|channel>thought\n...<channel|>final\nactual content here"
+# or stray "<|final|>", "<|system|>" markers. These tokens pollute observations,
+# summaries, and dialectic responses stored in Honcho and break downstream JSON
+# parsing for response_model paths. We strip them unconditionally for every
+# provider: the regexes are a no-op on well-behaved output and provide a single
+# chokepoint of protection against future model misbehavior. See also the
+# matching shim in the llmcord Discord bot (clean_output).
+_CHANNEL_FINAL_RE = re.compile(r"<channel\|>", re.IGNORECASE)
+_BRACKET_TOKEN_RE = re.compile(r"<\|[^>]*\|>")
+
+
+def _strip_harmony_tokens(text: str) -> str:
+    """Remove Harmony channel-token leakage from raw model text.
+
+    Keeps only the content after the last ``<channel|>`` marker (the "final"
+    channel payload), then strips stray ``<|..|>`` tokens. No-op for
+    well-behaved output.
+    """
+    if not text:
+        return text
+    if _CHANNEL_FINAL_RE.search(text):
+        text = _CHANNEL_FINAL_RE.split(text)[-1]
+    text = _BRACKET_TOKEN_RE.sub("", text)
+    return text.lstrip()
 
 
 @dataclass
@@ -1843,6 +1874,9 @@ async def honcho_llm_call_inner(
             stop_reason = anthropic_response.stop_reason
 
             text_content = "\n".join(text_blocks)
+            # Strip Harmony channel-token leakage (defense in depth; no-op for
+            # well-behaved providers).
+            text_content = _strip_harmony_tokens(text_content)
             thinking_content = (
                 "\n".join(thinking_text_blocks) if thinking_text_blocks else None
             )
@@ -1980,6 +2014,11 @@ async def honcho_llm_call_inner(
                     if vllm_response.choices[0].message.content is not None:
                         test_rep = vllm_response.choices[0].message.content
 
+                    # Strip Harmony channel-token leakage before JSON parsing
+                    # (critical for provider=custom routing through LM Studio
+                    # supergemma4, no-op for vLLM proper).
+                    test_rep = _strip_harmony_tokens(test_rep)
+
                     final = validate_and_repair_json(test_rep)
 
                     # Schema-aware repair: ensure deductive observations have required fields
@@ -2110,7 +2149,9 @@ async def honcho_llm_call_inner(
 
                 cache_creation, cache_read = extract_openai_cache_tokens(usage)
                 return HonchoLLMCallResponse(
-                    content=response.choices[0].message.content or "",  # pyright: ignore
+                    content=_strip_harmony_tokens(
+                        response.choices[0].message.content or ""  # pyright: ignore
+                    ),
                     input_tokens=usage.prompt_tokens if usage else 0,  # pyright: ignore
                     output_tokens=usage.completion_tokens if usage else 0,  # pyright: ignore
                     cache_creation_input_tokens=cache_creation,
@@ -2248,6 +2289,8 @@ async def honcho_llm_call_inner(
                             gemini_tool_calls.append(tool_call_data)
 
                 text_content = "\n".join(text_parts) if text_parts else ""
+                # Strip Harmony channel-token leakage (defense in depth).
+                text_content = _strip_harmony_tokens(text_content)
                 input_token_count = (
                     gemini_response.usage_metadata.prompt_token_count or 0
                     if gemini_response.usage_metadata
@@ -2369,7 +2412,10 @@ async def honcho_llm_call_inner(
             cache_creation, cache_read = extract_openai_cache_tokens(usage)
             if response_model:
                 try:
-                    json_content = json.loads(response.choices[0].message.content)  # pyright: ignore
+                    raw_content = response.choices[0].message.content  # pyright: ignore
+                    # Strip Harmony channel-token leakage before JSON parsing.
+                    raw_content = _strip_harmony_tokens(raw_content)
+                    json_content = json.loads(raw_content)
                     parsed_content = response_model.model_validate(json_content)
 
                     return HonchoLLMCallResponse(
@@ -2387,7 +2433,9 @@ async def honcho_llm_call_inner(
                     ) from e
             else:
                 return HonchoLLMCallResponse(
-                    content=response.choices[0].message.content,  # pyright: ignore
+                    content=_strip_harmony_tokens(
+                        response.choices[0].message.content  # pyright: ignore
+                    ),
                     input_tokens=usage.prompt_tokens if usage else 0,  # pyright: ignore
                     output_tokens=usage.completion_tokens if usage else 0,  # pyright: ignore
                     cache_creation_input_tokens=cache_creation,

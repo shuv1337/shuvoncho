@@ -18,6 +18,7 @@ from src.telemetry.prometheus.metrics import (
 from src.telemetry.sentry import with_sentry_transaction
 from src.utils.clients import honcho_llm_call
 from src.utils.config_helpers import get_configuration
+from src.utils.workspace_llm_overrides import override_settings_for_workspace
 from src.utils.formatting import format_new_turn_with_timestamp
 from src.utils.representation import PromptRepresentation, Representation
 from src.utils.tokens import track_deriver_input_tokens
@@ -124,7 +125,9 @@ async def process_representation_tasks_batch(
     # Single LLM call
     llm_start = time.perf_counter()
     response = await honcho_llm_call(
-        llm_settings=settings.DERIVER,
+        llm_settings=override_settings_for_workspace(
+            settings.DERIVER, latest_message.workspace_name
+        ),
         prompt=prompt,
         max_tokens=max_tokens,
         track_name="Minimal Deriver",

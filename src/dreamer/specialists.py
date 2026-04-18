@@ -33,6 +33,7 @@ from src.utils.agent_tools import (
     create_tool_executor,
 )
 from src.utils.clients import HonchoLLMCallResponse, honcho_llm_call
+from src.utils.workspace_llm_overrides import override_settings_for_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,7 @@ If you update it, send the full deduplicated list and remove stale entries.
         # Get model with potential override
         model = self.get_model()
         llm_settings = settings.DREAM.model_copy(update={"MODEL": model})
+        llm_settings = override_settings_for_workspace(llm_settings, workspace_name)
 
         # Track iterations via callback
         iteration_count = 0

@@ -27,6 +27,7 @@ from src.telemetry.prometheus.metrics import (
 from src.utils.clients import HonchoLLMCallResponse, honcho_llm_call
 from src.utils.formatting import utc_now_iso
 from src.utils.tokens import estimate_tokens, track_deriver_input_tokens
+from src.utils.workspace_llm_overrides import override_settings_for_workspace
 
 from .. import crud, models
 
@@ -194,6 +195,7 @@ async def create_short_summary(
     formatted_messages: str,
     input_tokens: int,
     previous_summary: str | None = None,
+    workspace_name: str | None = None,
 ) -> HonchoLLMCallResponse[str]:
     # input_tokens indicates how many tokens the message list + previous summary take up
     # we want to optimize short summaries to be smaller than the actual content being summarized
@@ -212,7 +214,9 @@ async def create_short_summary(
     )
 
     return await honcho_llm_call(
-        llm_settings=settings.SUMMARY,
+        llm_settings=override_settings_for_workspace(
+            settings.SUMMARY, workspace_name
+        ),
         prompt=prompt,
         max_tokens=settings.SUMMARY.MAX_TOKENS_SHORT,
     )
@@ -222,6 +226,7 @@ async def create_short_summary(
 async def create_long_summary(
     formatted_messages: str,
     previous_summary: str | None = None,
+    workspace_name: str | None = None,
 ) -> HonchoLLMCallResponse[str]:
     # the word/token ratio is roughly 4:3 so we multiply by 0.75.
     # LLMs *seem* to respond better to getting asked for a word count but should workshop this.
@@ -237,7 +242,9 @@ async def create_long_summary(
     )
 
     return await honcho_llm_call(
-        llm_settings=settings.SUMMARY,
+        llm_settings=override_settings_for_workspace(
+            settings.SUMMARY, workspace_name
+        ),
         prompt=prompt,
         max_tokens=settings.SUMMARY.MAX_TOKENS_LONG,
     )
@@ -433,6 +440,7 @@ async def _create_and_save_summary(
         last_message_id=last_message_id,
         last_message_content_preview=last_message_content_preview,
         message_count=message_count,
+        workspace_name=workspace_name,
     )
 
     # Step 3: Save to database with new transaction
@@ -522,6 +530,7 @@ async def _create_summary(
     last_message_id: int,
     last_message_content_preview: str,
     message_count: int,
+    workspace_name: str | None = None,
 ) -> tuple[Summary, bool, int, int]:
     """
     Generate a summary of the provided messages using an LLM.
@@ -550,11 +559,16 @@ async def _create_summary(
     try:
         if summary_type == SummaryType.SHORT:
             response = await create_short_summary(
-                formatted_messages, input_tokens, previous_summary_text
+                formatted_messages,
+                input_tokens,
+                previous_summary_text,
+                workspace_name=workspace_name,
             )
         else:
             response = await create_long_summary(
-                formatted_messages, previous_summary_text
+                formatted_messages,
+                previous_summary_text,
+                workspace_name=workspace_name,
             )
 
         summary_text = response.content

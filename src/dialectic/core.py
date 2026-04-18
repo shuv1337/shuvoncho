@@ -37,6 +37,7 @@ from src.utils.clients import (
     honcho_llm_call,
 )
 from src.utils.formatting import format_new_turn_with_timestamp
+from src.utils.workspace_llm_overrides import override_settings_for_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -414,6 +415,9 @@ class DialecticAgent:
 
         # Get level-specific settings
         level_settings = settings.DIALECTIC.LEVELS[self.reasoning_level]
+        level_settings = override_settings_for_workspace(
+            level_settings, self.workspace_name
+        )
 
         # Use minimal tools for minimal reasoning to reduce cost
         tools = (
@@ -497,6 +501,9 @@ class DialecticAgent:
 
         # Get level-specific settings
         level_settings = settings.DIALECTIC.LEVELS[self.reasoning_level]
+        level_settings = override_settings_for_workspace(
+            level_settings, self.workspace_name
+        )
 
         # Use minimal tools for minimal reasoning to reduce cost
         tools = (
