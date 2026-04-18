@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Any
 
 import sentry_sdk
 from pydantic import ValidationError
@@ -37,10 +38,30 @@ logging.getLogger("sqlalchemy.engine.Engine").disabled = True
 
 async def process_item(queue_item: models.QueueItem) -> None:
     """Process a single item from the queue."""
+    from src.telemetry.spans import span
+
     task_type = queue_item.task_type
     queue_payload = queue_item.payload
     workspace_name = queue_item.workspace_name
 
+    with span(
+        "deriver.task",
+        **{
+            "deriver.task_type": task_type,
+            "deriver.workspace": workspace_name or "",
+            "deriver.message_id": queue_item.message_id or 0,
+            "deriver.queue_item_id": queue_item.id or 0,
+        },
+    ):
+        await _process_item_inner(queue_item, task_type, queue_payload, workspace_name)
+
+
+async def _process_item_inner(
+    queue_item: models.QueueItem,
+    task_type: str,
+    queue_payload: dict[str, Any],
+    workspace_name: str | None,
+) -> None:
     # Handle reconciler first - it's the only task type that doesn't require workspace_name
     if task_type == "reconciler":
         with sentry_sdk.start_transaction(name="process_reconciler_task", op="deriver"):

@@ -392,6 +392,24 @@ class DialecticAgent:
         Returns:
             The synthesized answer string
         """
+        from src.telemetry.spans import span
+
+        with span(
+            "dialectic.answer",
+            **{
+                "dialectic.workspace": self.workspace_name,
+                "dialectic.observer": self.observer,
+                "dialectic.observed": self.observed,
+                "dialectic.session": self.session_name or "",
+                "dialectic.reasoning_level": self.reasoning_level,
+                "dialectic.run_id": self._run_id,
+                "dialectic.query_length": len(query),
+                "dialectic.streaming": False,
+            },
+        ):
+            return await self._answer_inner(query)
+
+    async def _answer_inner(self, query: str) -> str:
         tool_executor, task_name, run_id, start_time = await self._prepare_query(query)
 
         # Get level-specific settings
@@ -456,6 +474,25 @@ class DialecticAgent:
         Yields:
             Chunks of the response text as they are generated
         """
+        from src.telemetry.spans import span
+
+        with span(
+            "dialectic.answer_stream",
+            **{
+                "dialectic.workspace": self.workspace_name,
+                "dialectic.observer": self.observer,
+                "dialectic.observed": self.observed,
+                "dialectic.session": self.session_name or "",
+                "dialectic.reasoning_level": self.reasoning_level,
+                "dialectic.run_id": self._run_id,
+                "dialectic.query_length": len(query),
+                "dialectic.streaming": True,
+            },
+        ):
+            async for chunk in self._answer_stream_inner(query):
+                yield chunk
+
+    async def _answer_stream_inner(self, query: str) -> AsyncIterator[str]:
         tool_executor, task_name, run_id, start_time = await self._prepare_query(query)
 
         # Get level-specific settings

@@ -1496,9 +1496,34 @@ async def honcho_llm_call(
 
     # If no tools or no tool_executor, just call once and return
     if not tools or not tool_executor:
-        result: (
-            HonchoLLMCallResponse[Any] | AsyncIterator[HonchoLLMCallStreamChunk]
-        ) = await decorated()
+        from src.telemetry.spans import annotate_llm_usage, span
+
+        with span(
+            "llm.call",
+            **{
+                "llm.provider": llm_settings.PROVIDER,
+                "llm.model": llm_settings.MODEL,
+                "llm.track_name": track_name or "",
+                "llm.trace_name": trace_name or "",
+                "llm.max_tokens": max_tokens,
+                "llm.stream": stream,
+            },
+        ) as _llm_span:
+            result: (
+                HonchoLLMCallResponse[Any] | AsyncIterator[HonchoLLMCallStreamChunk]
+            ) = await decorated()
+            if isinstance(result, HonchoLLMCallResponse):
+                annotate_llm_usage(
+                    _llm_span,
+                    provider=llm_settings.PROVIDER,
+                    model=llm_settings.MODEL,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cache_read_input_tokens=result.cache_read_input_tokens,
+                    cache_creation_input_tokens=result.cache_creation_input_tokens,
+                    iterations=result.iterations,
+                    finish_reasons=result.finish_reasons,
+                )
         if trace_name and isinstance(result, HonchoLLMCallResponse):
             log_reasoning_trace(
                 task_type=trace_name,
@@ -1525,30 +1550,57 @@ async def honcho_llm_call(
         )
 
     # Delegate to the tool execution loop
-    result = await _execute_tool_loop(
-        llm_settings=llm_settings,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        messages=messages,
-        tools=tools,
-        tool_choice=tool_choice,
-        tool_executor=tool_executor,
-        max_tool_iterations=clamped_iterations,
-        response_model=response_model,
-        json_mode=json_mode,
-        temperature=temperature,
-        stop_seqs=stop_seqs,
-        reasoning_effort=reasoning_effort,
-        verbosity=verbosity,
-        thinking_budget_tokens=thinking_budget_tokens,
-        enable_retry=enable_retry,
-        retry_attempts=retry_attempts,
-        max_input_tokens=max_input_tokens,
-        get_provider_and_model=_get_provider_and_model,
-        before_retry_callback=before_retry_callback,
-        stream_final=stream_final_only,
-        iteration_callback=iteration_callback,
-    )
+    from src.telemetry.spans import annotate_llm_usage, span
+
+    with span(
+        "llm.call",
+        **{
+            "llm.provider": llm_settings.PROVIDER,
+            "llm.model": llm_settings.MODEL,
+            "llm.track_name": track_name or "",
+            "llm.trace_name": trace_name or "",
+            "llm.max_tokens": max_tokens,
+            "llm.stream": stream,
+            "llm.tool_loop": True,
+            "llm.max_tool_iterations": clamped_iterations,
+        },
+    ) as _llm_span:
+        result = await _execute_tool_loop(
+            llm_settings=llm_settings,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            tool_executor=tool_executor,
+            max_tool_iterations=clamped_iterations,
+            response_model=response_model,
+            json_mode=json_mode,
+            temperature=temperature,
+            stop_seqs=stop_seqs,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
+            thinking_budget_tokens=thinking_budget_tokens,
+            enable_retry=enable_retry,
+            retry_attempts=retry_attempts,
+            max_input_tokens=max_input_tokens,
+            get_provider_and_model=_get_provider_and_model,
+            before_retry_callback=before_retry_callback,
+            stream_final=stream_final_only,
+            iteration_callback=iteration_callback,
+        )
+        if isinstance(result, HonchoLLMCallResponse):
+            annotate_llm_usage(
+                _llm_span,
+                provider=llm_settings.PROVIDER,
+                model=llm_settings.MODEL,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cache_read_input_tokens=result.cache_read_input_tokens,
+                cache_creation_input_tokens=result.cache_creation_input_tokens,
+                iterations=result.iterations,
+                finish_reasons=result.finish_reasons,
+            )
     if trace_name and isinstance(result, HonchoLLMCallResponse):
         log_reasoning_trace(
             task_type=trace_name,

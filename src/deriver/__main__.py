@@ -7,8 +7,12 @@ from prometheus_client import start_http_server
 
 from src.config import settings
 from src.telemetry import initialize_telemetry_async, shutdown_telemetry
+from src.telemetry.tracing import setup_tracing
 
-from .queue_manager import main
+# Set up OTEL tracing for the deriver process (no-op if disabled).
+setup_tracing()
+
+from .queue_manager import main  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
